@@ -238,8 +238,8 @@ class Talkie:
 
         with torch.no_grad(), self._autocast:
             for _ in range(global_max):
-                next_tokens = self.model.sample_batch_variable_temp(
-                    tokens_tensor, temps, top_p=top_p_t, top_k=top_k_t
+                next_tokens = self.model.sample_batch(
+                    tokens_tensor, t=temps, top_p=top_p_t, top_k=top_k_t
                 )
                 next_tokens = next_tokens.unsqueeze(1)
                 tokens_tensor = torch.cat([tokens_tensor, next_tokens], dim=1)

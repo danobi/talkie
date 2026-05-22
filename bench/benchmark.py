@@ -211,12 +211,9 @@ def bench_decode(
             _sync()
             t_prefill = time.perf_counter()
 
-            # Sample first token from prefill logits.
-            first_logits = logits / 1.0  # temperature=1 for benchmarking
-            first_logits = first_logits + torch.zeros_like(
-                first_logits
-            )  # no gumbel for determinism
-            first_tok = torch.argmax(first_logits, dim=-1)
+            # Sample first token deterministically (argmax of raw logits) so
+            # TTFT timing isn't perturbed by per-step Gumbel noise.
+            first_tok = torch.argmax(logits, dim=-1)
             x = torch.cat([x, first_tok.unsqueeze(1)], dim=1)
             _sync()
             t_first_token = time.perf_counter()

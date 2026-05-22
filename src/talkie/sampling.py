@@ -63,6 +63,31 @@ def apply_top_k_top_p(
     return logits
 
 
+def sample_from_logits(
+    logits: torch.Tensor,
+    temperature: float | torch.Tensor = 1.0,
+    top_p: torch.Tensor | None = None,
+    top_k: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Convert ``[B, V]`` logits to ``[B]`` sampled token ids.
+
+    Pipeline: temperature → optional top-k / top-p filter → Gumbel-argmax.
+
+    *temperature* accepts either a Python ``float`` (scalar, broadcast to every
+    row) or a tensor of shape ``[B]`` / ``[B, 1]`` for per-row temperatures.
+    """
+    if isinstance(temperature, torch.Tensor):
+        logits = logits / temperature
+    elif temperature != 1.0:
+        logits = logits / temperature
+
+    if top_p is not None or top_k is not None:
+        logits = apply_top_k_top_p(logits, top_p=top_p, top_k=top_k)
+
+    logits = logits + sample_gumbel(logits.shape, logits.device)
+    return torch.argmax(logits, dim=-1)
+
+
 # ---------------------------------------------------------------------------
 # Helpers for converting Python scalars / lists to the tensor format expected
 # by apply_top_k_top_p.

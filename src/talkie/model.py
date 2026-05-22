@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from talkie.sampling import apply_top_k_top_p, sample_gumbel
+from talkie.sampling import sample_from_logits
 
 
 # ---------------------------------------------------------------------------
@@ -199,33 +199,17 @@ class TalkieModel(nn.Module):
     def sample_batch(
         self,
         x: torch.Tensor,
-        t: float = 0.7,
+        t: float | torch.Tensor = 0.7,
         top_p: torch.Tensor | None = None,
         top_k: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Sample one token per sequence in the batch."""
-        logits = self.forward(x)
-        if t != 1:
-            logits = logits / t
-        if top_p is not None or top_k is not None:
-            logits = apply_top_k_top_p(logits, top_p=top_p, top_k=top_k)
-        logits = logits + sample_gumbel(logits.shape, self.device)
-        return torch.argmax(logits, dim=-1)
+        """Sample one token per sequence in the batch.
 
-    def sample_batch_variable_temp(
-        self,
-        x: torch.Tensor,
-        t: torch.Tensor,
-        top_p: torch.Tensor | None = None,
-        top_k: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Like :meth:`sample_batch` but *t* is a ``[B, 1]`` per-sequence temperature."""
+        *t* may be a scalar (one temperature for the whole batch) or a tensor of
+        shape ``[B]`` / ``[B, 1]`` (per-sequence temperatures).
+        """
         logits = self.forward(x)
-        logits = logits / t
-        if top_p is not None or top_k is not None:
-            logits = apply_top_k_top_p(logits, top_p=top_p, top_k=top_k)
-        logits = logits + sample_gumbel(logits.shape, self.device)
-        return torch.argmax(logits, dim=-1)
+        return sample_from_logits(logits, temperature=t, top_p=top_p, top_k=top_k)
 
 
 # ---------------------------------------------------------------------------
