@@ -428,6 +428,38 @@ def _print_result(r: BenchmarkResult):
 # ---------------------------------------------------------------------------
 
 
+def profile_load(
+    model_name: str,
+    trace_path: str = "load_trace.json",
+    device: str | None = None,
+    cache_dir: str | None = None,
+) -> None:
+    """Profile model loading and export a Chrome trace for Perfetto."""
+    from torch.profiler import ProfilerActivity, profile, record_function
+
+    activities = [ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(ProfilerActivity.CUDA)
+
+    print(f"Profiling model load: {model_name}...")
+    with profile(
+        activities=activities,
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True,
+    ) as prof:
+        with record_function("model_load"):
+            Talkie(model_name, device=device, cache_dir=cache_dir)
+            _sync()
+
+    prof.export_chrome_trace(trace_path)
+    print(f"Trace saved to {trace_path}")
+    print("Open in Perfetto: https://ui.perfetto.dev/")
+
+    # Also print a summary table to the terminal.
+    print(f"\n{prof.key_averages().table(sort_by='self_cpu_time_total', row_limit=30)}")
+
+
 def run_benchmarks(
     model_name: str,
     scenarios: list[str] | None = None,
@@ -510,16 +542,32 @@ def main():
     )
     parser.add_argument("--device", default=None, help="PyTorch device")
     parser.add_argument("--cache-dir", default=None, help="HuggingFace cache directory")
+    parser.add_argument(
+        "--profile-load",
+        nargs="?",
+        const="load_trace.json",
+        default=None,
+        metavar="PATH",
+        help="Profile model loading and save Chrome trace for Perfetto (default: load_trace.json)",
+    )
     args = parser.parse_args()
 
-    run_benchmarks(
-        model_name=args.model,
-        scenarios=args.scenarios,
-        warmup=args.warmup,
-        trials=args.trials,
-        device=args.device,
-        cache_dir=args.cache_dir,
-    )
+    if args.profile_load:
+        profile_load(
+            model_name=args.model,
+            trace_path=args.profile_load,
+            device=args.device,
+            cache_dir=args.cache_dir,
+        )
+    else:
+        run_benchmarks(
+            model_name=args.model,
+            scenarios=args.scenarios,
+            warmup=args.warmup,
+            trials=args.trials,
+            device=args.device,
+            cache_dir=args.cache_dir,
+        )
 
 
 if __name__ == "__main__":
