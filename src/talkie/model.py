@@ -7,6 +7,7 @@ embedding skip connections, and per-head / per-layer gain parameters.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -261,17 +262,30 @@ def resize_model_embeddings(
     return model
 
 
-def load_checkpoint(
-    checkpoint_path: str,
-    device: torch.device,
-    target_vocab_size: int | None = None,
-) -> TalkieModel:
-    """Load a Talkie model from a PyTorch checkpoint file.
+def _load_from_bf16_cache(cache_path: Path, device: torch.device) -> TalkieModel:
+    state_dict = torch.load(cache_path, map_location=device)
+    ckpt_vocab_size = state_dict["embed.weight"].shape[0]
+    config = GPTConfig(vocab_size=ckpt_vocab_size)
 
-    Handles ``torch.compile`` key prefixes and optional vocab resizing.
-    Builds and converts to bfloat16 on CPU first, then moves to GPU to
-    avoid a transient 2x memory spike from float32 initialisation.
-    """
+    prev_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    try:
+        with torch.device(device):
+            model = TalkieModel(config, device)
+    finally:
+        torch.set_default_dtype(prev_dtype)
+
+    model.load_state_dict(state_dict, strict=True)
+    model.device = device
+    model.eval()
+
+    return model
+
+
+def _load_from_source(
+    checkpoint_path: str, target_vocab_size: int | None
+) -> TalkieModel:
+    """Load fp32 checkpoint, resize if needed, convert to bf16 on CPU."""
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     if "model_state_dict" in ckpt:
         state_dict = ckpt["model_state_dict"]
@@ -293,7 +307,31 @@ def load_checkpoint(
     if target_vocab_size is not None and ckpt_vocab_size < target_vocab_size:
         model = resize_model_embeddings(model, target_vocab_size, cpu)
 
-    model = model.to(dtype=torch.bfloat16).to(device)
+    return model.to(dtype=torch.bfloat16)
+
+
+def load_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    target_vocab_size: int | None = None,
+) -> TalkieModel:
+    """Load a Talkie model from a PyTorch checkpoint file.
+
+    Handles ``torch.compile`` key prefixes and optional vocab resizing.
+
+    The first load converts fp32 -> bf16 on CPU (to avoid a transient 2x GPU
+    memory spike from fp32 init) and writes a ``<checkpoint>.bf16.pt`` sidecar.
+    Subsequent loads read the sidecar directly onto *device*, skipping the CPU
+    staging step. Delete the sidecar to force a re-conversion.
+    """
+    cache_path = Path(checkpoint_path + ".bf16.pt")
+    if cache_path.exists():
+        return _load_from_bf16_cache(cache_path, device)
+
+    model = _load_from_source(checkpoint_path, target_vocab_size)
+    torch.save(model.state_dict(), cache_path)
+
+    model = model.to(device)
     model.device = device
     model.eval()
     return model

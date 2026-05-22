@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+DEFAULT_CACHE_DIR = "/tmp/talkie-cache"
+
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
@@ -28,16 +30,20 @@ def main(argv: list[str] | None = None) -> None:
     gen.add_argument("--top-p", type=float, default=None, help="Nucleus sampling p.")
     gen.add_argument("--top-k", type=int, default=None, help="Top-k filtering.")
     gen.add_argument("--device", default=None, help="Device (cuda / cpu).")
-    gen.add_argument("--cache-dir", default=None, help="HuggingFace cache directory.")
     gen.add_argument(
-        "--no-stream", action="store_true", help="Print all at once instead of streaming."
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR}).",
+    )
+    gen.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Print all at once instead of streaming.",
     )
 
     # -- chat --------------------------------------------------------------
     ch = sub.add_parser("chat", help="Interactive multi-turn chat (IT model).")
-    ch.add_argument(
-        "-m", "--model", default="talkie-1930-13b-it", help="Model name."
-    )
+    ch.add_argument("-m", "--model", default="talkie-1930-13b-it", help="Model name.")
     ch.add_argument(
         "-t", "--temperature", type=float, default=0.7, help="Sampling temperature."
     )
@@ -47,7 +53,11 @@ def main(argv: list[str] | None = None) -> None:
     ch.add_argument("--top-p", type=float, default=None, help="Nucleus sampling p.")
     ch.add_argument("--top-k", type=int, default=None, help="Top-k filtering.")
     ch.add_argument("--device", default=None, help="Device (cuda / cpu).")
-    ch.add_argument("--cache-dir", default=None, help="HuggingFace cache directory.")
+    ch.add_argument(
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR}).",
+    )
     ch.add_argument("--system", default=None, help="System prompt.")
 
     # -- download ----------------------------------------------------------
@@ -56,7 +66,11 @@ def main(argv: list[str] | None = None) -> None:
         "model",
         help='Model name (or "all" to download every model).',
     )
-    dl.add_argument("--cache-dir", default=None, help="HuggingFace cache directory.")
+    dl.add_argument(
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR}).",
+    )
 
     # -- list --------------------------------------------------------------
     sub.add_parser("list", help="List available models.")

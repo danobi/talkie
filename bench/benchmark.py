@@ -37,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from talkie.config import MODELS
 from talkie.generate import GenerationConfig, Talkie
 
+DEFAULT_CACHE_DIR = Path("/tmp/talkie-cache")
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -687,7 +689,11 @@ def main():
         "--trials", type=int, default=5, help="Timing trials per benchmark"
     )
     parser.add_argument("--device", default=None, help="PyTorch device")
-    parser.add_argument("--cache-dir", default=None, help="HuggingFace cache directory")
+    parser.add_argument(
+        "--cache-dir",
+        default=str(DEFAULT_CACHE_DIR),
+        help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR})",
+    )
     parser.add_argument(
         "--profile-load",
         nargs="?",
