@@ -6,15 +6,27 @@ end-to-end latency, peak GPU memory, and batch generation performance.
 Usage:
     uv run python bench/benchmark.py --model talkie-1930-13b-base
     uv run python bench/benchmark.py --model talkie-1930-13b-base --scenarios short medium long batch
+
+    # Save results as a baseline:
+    uv run python bench/benchmark.py --save bench/baselines/main.json
+
+    # Run and diff against a saved baseline:
+    uv run python bench/benchmark.py --baseline bench/baselines/main.json
+
+    # Diff two saved runs without re-running:
+    uv run python bench/benchmark.py --diff bench/baselines/main.json bench/baselines/latest.json
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -424,6 +436,140 @@ def _print_result(r: BenchmarkResult):
 
 
 # ---------------------------------------------------------------------------
+# Serialization & diffing
+# ---------------------------------------------------------------------------
+
+SCHEMA_VERSION = 1
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def save_suite(suite: BenchmarkSuite, path: str | Path) -> Path:
+    """Serialize a benchmark suite to JSON on disk."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_commit": _git_commit(),
+        "suite": asdict(suite),
+    }
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+def load_suite(path: str | Path) -> tuple[BenchmarkSuite, dict]:
+    """Load a benchmark suite from JSON.
+
+    Returns the suite and a metadata dict (timestamp, git_commit, schema_version).
+    """
+    path = Path(path)
+    payload = json.loads(path.read_text())
+    schema = payload.get("schema_version")
+    if schema != SCHEMA_VERSION:
+        print(f"Warning: {path} has schema_version={schema}, expected {SCHEMA_VERSION}")
+    suite_data = dict(payload["suite"])
+    results = [BenchmarkResult(**r) for r in suite_data.pop("results", [])]
+    suite = BenchmarkSuite(results=results, **suite_data)
+    metadata = {k: v for k, v in payload.items() if k != "suite"}
+    return suite, metadata
+
+
+# (label, attr, unit, higher_is_better) — metrics shown in the diff table.
+_DIFF_METRICS: list[tuple[str, str, str, bool]] = [
+    ("Prefill tok/s", "prefill_tok_per_sec", "tok/s", True),
+    ("Decode tok/s", "decode_tok_per_sec", "tok/s", True),
+    ("TTFT", "ttft_ms", "ms", False),
+    ("Total", "total_ms", "ms", False),
+    ("Peak memory", "peak_memory_gb", "GB", False),
+]
+
+
+def _diff_row(
+    label: str,
+    baseline_val: float,
+    current_val: float,
+    unit: str,
+    higher_is_better: bool,
+    significance_pct: float = 1.0,
+) -> str:
+    delta = current_val - baseline_val
+    if baseline_val == 0:
+        pct_str = "    n/a"
+        verdict = ""
+    else:
+        pct = delta / baseline_val * 100
+        pct_str = f"{pct:+6.1f}%"
+        if abs(pct) < significance_pct:
+            verdict = ""
+        elif (delta > 0) == higher_is_better:
+            verdict = "  (better)"
+        else:
+            verdict = "  (worse)"
+    return (
+        f"    {label:<16} {baseline_val:>10.2f} -> {current_val:>10.2f} "
+        f"{unit:<5}  {pct_str}{verdict}"
+    )
+
+
+def diff_suites(
+    baseline: BenchmarkSuite,
+    current: BenchmarkSuite,
+    baseline_meta: dict | None = None,
+    current_meta: dict | None = None,
+) -> None:
+    """Print a side-by-side comparison of two benchmark suites."""
+    print(f"\n{'=' * 78}")
+    print("  DIFF: baseline -> current")
+    print(f"{'=' * 78}")
+    print(f"  Model:   {baseline.model_name} -> {current.model_name}")
+    print(f"  Device:  {baseline.device} -> {current.device}")
+    print(f"  Dtype:   {baseline.dtype} -> {current.dtype}")
+    for label, meta in (("Baseline", baseline_meta), ("Current ", current_meta)):
+        if not meta:
+            continue
+        commit = (meta.get("git_commit") or "?")[:12]
+        ts = meta.get("timestamp", "?")
+        print(f"  {label}: {ts}  @ {commit}")
+
+    print("\n  Load time:")
+    print(_diff_row("seconds", baseline.load_time_s, current.load_time_s, "s", False))
+
+    baseline_by_name = {r.scenario: r for r in baseline.results}
+    current_by_name = {r.scenario: r for r in current.results}
+    ordered: list[str] = list(baseline_by_name.keys())
+    for s in current_by_name:
+        if s not in baseline_by_name:
+            ordered.append(s)
+
+    for name in ordered:
+        b = baseline_by_name.get(name)
+        c = current_by_name.get(name)
+        print(f"\n  [{name}]")
+        if b is None:
+            print("    (only in current)")
+            continue
+        if c is None:
+            print("    (only in baseline)")
+            continue
+        for label, attr, unit, higher_is_better in _DIFF_METRICS:
+            bv = getattr(b, attr)
+            cv = getattr(c, attr)
+            if bv == 0 and cv == 0:
+                continue
+            print(_diff_row(label, bv, cv, unit, higher_is_better))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -550,7 +696,32 @@ def main():
         metavar="PATH",
         help="Profile model loading and save Chrome trace for Perfetto (default: load_trace.json)",
     )
+    parser.add_argument(
+        "--save",
+        default=None,
+        metavar="PATH",
+        help="Save benchmark results to JSON at PATH (capture a baseline)",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        metavar="PATH",
+        help="After running, diff results against a previously-saved baseline JSON",
+    )
+    parser.add_argument(
+        "--diff",
+        nargs=2,
+        default=None,
+        metavar=("BASELINE", "CURRENT"),
+        help="Diff two saved benchmark JSON files without running the suite",
+    )
     args = parser.parse_args()
+
+    if args.diff:
+        baseline_suite, baseline_meta = load_suite(args.diff[0])
+        current_suite, current_meta = load_suite(args.diff[1])
+        diff_suites(baseline_suite, current_suite, baseline_meta, current_meta)
+        return
 
     if args.profile_load:
         profile_load(
@@ -559,15 +730,28 @@ def main():
             device=args.device,
             cache_dir=args.cache_dir,
         )
-    else:
-        run_benchmarks(
-            model_name=args.model,
-            scenarios=args.scenarios,
-            warmup=args.warmup,
-            trials=args.trials,
-            device=args.device,
-            cache_dir=args.cache_dir,
-        )
+        return
+
+    suite = run_benchmarks(
+        model_name=args.model,
+        scenarios=args.scenarios,
+        warmup=args.warmup,
+        trials=args.trials,
+        device=args.device,
+        cache_dir=args.cache_dir,
+    )
+
+    if args.save:
+        save_path = save_suite(suite, args.save)
+        print(f"\nSaved benchmark results to {save_path}")
+
+    if args.baseline:
+        baseline_suite, baseline_meta = load_suite(args.baseline)
+        current_meta = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "git_commit": _git_commit(),
+        }
+        diff_suites(baseline_suite, suite, baseline_meta, current_meta)
 
 
 if __name__ == "__main__":
