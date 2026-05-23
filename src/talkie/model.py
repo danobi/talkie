@@ -12,6 +12,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from talkie.sampling import sample_from_logits
 
@@ -103,9 +104,10 @@ class CausalSelfAttention(nn.Module):
         q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))
         q = self.head_gain(q)
 
-        y = F.scaled_dot_product_attention(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True
-        )
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            y = F.scaled_dot_product_attention(
+                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True
+            )
         y = y.transpose(1, 2).contiguous().view_as(x)
         return self.attn_resid(y)
 
