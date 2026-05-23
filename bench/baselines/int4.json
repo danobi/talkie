@@ -1,0 +1,278 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-23T02:02:22.507931+00:00",
+  "git_commit": "91c5982de2cddd4fcd84190ffb80360afe0879a0",
+  "suite": {
+    "model_name": "talkie-1930-13b-base",
+    "device": "cuda",
+    "dtype": "bfloat16+int4",
+    "load_time_s": 17.263445410877466,
+    "results": [
+      {
+        "scenario": "short",
+        "prompt_tokens": 32,
+        "generated_tokens": 128,
+        "prefill_ms": 35.46614274382591,
+        "prefill_tok_per_sec": 902.2689676500186,
+        "decode_ms": 21346.206229925156,
+        "decode_tok_per_sec": 5.9963816811887325,
+        "ttft_ms": 35.50405614078045,
+        "total_ms": 21381.710286065936,
+        "peak_memory_gb": 8.230252265930176,
+        "trials": 5,
+        "trial_details": [
+          {
+            "elapsed_ms": 35.44414974749088,
+            "peak_memory_gb": 8.227158546447754
+          },
+          {
+            "elapsed_ms": 35.54297424852848,
+            "peak_memory_gb": 8.227158546447754
+          },
+          {
+            "elapsed_ms": 35.44717561453581,
+            "peak_memory_gb": 8.227158546447754
+          },
+          {
+            "elapsed_ms": 35.46549752354622,
+            "peak_memory_gb": 8.227158546447754
+          },
+          {
+            "elapsed_ms": 35.43091658502817,
+            "peak_memory_gb": 8.227158546447754
+          },
+          {
+            "prefill_ms": 35.403817892074585,
+            "ttft_ms": 35.454352386295795,
+            "decode_ms": 59802.31278948486,
+            "total_ms": 59837.767141871154,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.230252265930176
+          },
+          {
+            "prefill_ms": 35.47609690576792,
+            "ttft_ms": 35.531291738152504,
+            "decode_ms": 11776.671799831092,
+            "total_ms": 11812.203091569245,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.230252265930176
+          },
+          {
+            "prefill_ms": 35.58100387454033,
+            "ttft_ms": 35.630589351058006,
+            "decode_ms": 11776.562429964542,
+            "total_ms": 11812.1930193156,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.230252265930176
+          },
+          {
+            "prefill_ms": 35.49942281097174,
+            "ttft_ms": 35.550136119127274,
+            "decode_ms": 11700.186599045992,
+            "total_ms": 11735.73673516512,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.230252265930176
+          },
+          {
+            "prefill_ms": 35.30374355614185,
+            "ttft_ms": 35.353911109268665,
+            "decode_ms": 11675.297531299293,
+            "total_ms": 11710.651442408562,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.230252265930176
+          }
+        ]
+      },
+      {
+        "scenario": "medium",
+        "prompt_tokens": 255,
+        "generated_tokens": 128,
+        "prefill_ms": 230.39513137191534,
+        "prefill_tok_per_sec": 1106.7942212214816,
+        "decode_ms": 45961.60789318383,
+        "decode_tok_per_sec": 2.7849330314438934,
+        "ttft_ms": 230.8771688491106,
+        "total_ms": 46192.48506203294,
+        "peak_memory_gb": 8.234405994415283,
+        "trials": 5,
+        "trial_details": [
+          {
+            "elapsed_ms": 230.38372490555048,
+            "peak_memory_gb": 8.2314133644104
+          },
+          {
+            "elapsed_ms": 230.39453011006117,
+            "peak_memory_gb": 8.2314133644104
+          },
+          {
+            "elapsed_ms": 230.42618483304977,
+            "peak_memory_gb": 8.2314133644104
+          },
+          {
+            "elapsed_ms": 230.37142679095268,
+            "peak_memory_gb": 8.2314133644104
+          },
+          {
+            "elapsed_ms": 230.3997902199626,
+            "peak_memory_gb": 8.2314133644104
+          },
+          {
+            "prefill_ms": 230.41036631911993,
+            "ttft_ms": 230.48738110810518,
+            "decode_ms": 84496.25852610916,
+            "total_ms": 84726.74590721726,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.234405994415283
+          },
+          {
+            "prefill_ms": 232.53117967396975,
+            "ttft_ms": 232.60973952710629,
+            "decode_ms": 36341.92352090031,
+            "total_ms": 36574.533260427415,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.234405994415283
+          },
+          {
+            "prefill_ms": 230.34791089594364,
+            "ttft_ms": 230.41463550180197,
+            "decode_ms": 36322.970343753695,
+            "total_ms": 36553.3849792555,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.234405994415283
+          },
+          {
+            "prefill_ms": 230.336950160563,
+            "ttft_ms": 230.40311690419912,
+            "decode_ms": 36322.90902920067,
+            "total_ms": 36553.31214610487,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.234405994415283
+          },
+          {
+            "prefill_ms": 230.3870739415288,
+            "ttft_ms": 230.47097120434046,
+            "decode_ms": 36323.9780459553,
+            "total_ms": 36554.44901715964,
+            "generated_tokens": 128,
+            "peak_memory_gb": 8.234405994415283
+          }
+        ]
+      },
+      {
+        "scenario": "long",
+        "prompt_tokens": 1018,
+        "generated_tokens": 64,
+        "prefill_ms": 895.7598611712456,
+        "prefill_tok_per_sec": 1136.4653007212446,
+        "decode_ms": 62752.150052413344,
+        "decode_tok_per_sec": 1.0198853735934847,
+        "ttft_ms": 895.7932012155652,
+        "total_ms": 63647.94325362891,
+        "peak_memory_gb": 8.247419357299805,
+        "trials": 5,
+        "trial_details": [
+          {
+            "elapsed_ms": 895.7148101180792,
+            "peak_memory_gb": 8.245972156524658
+          },
+          {
+            "elapsed_ms": 896.0731606930494,
+            "peak_memory_gb": 8.245972156524658
+          },
+          {
+            "elapsed_ms": 895.6159250810742,
+            "peak_memory_gb": 8.245972156524658
+          },
+          {
+            "elapsed_ms": 895.688901655376,
+            "peak_memory_gb": 8.245972156524658
+          },
+          {
+            "elapsed_ms": 895.7065083086491,
+            "peak_memory_gb": 8.245972156524658
+          },
+          {
+            "prefill_ms": 895.7460662350059,
+            "ttft_ms": 895.8468995988369,
+            "decode_ms": 80790.87345395237,
+            "total_ms": 81686.72035355121,
+            "generated_tokens": 64,
+            "peak_memory_gb": 8.247419357299805
+          },
+          {
+            "prefill_ms": 895.6198086962104,
+            "ttft_ms": 895.7327092066407,
+            "decode_ms": 58240.68167246878,
+            "total_ms": 59136.41438167542,
+            "generated_tokens": 64,
+            "peak_memory_gb": 8.247419357299805
+          },
+          {
+            "prefill_ms": 895.7102922722697,
+            "ttft_ms": 895.8144234493375,
+            "decode_ms": 58243.71468927711,
+            "total_ms": 59139.52911272645,
+            "generated_tokens": 64,
+            "peak_memory_gb": 8.247419357299805
+          },
+          {
+            "prefill_ms": 895.6821765750647,
+            "ttft_ms": 895.8001434803009,
+            "decode_ms": 58242.192718200386,
+            "total_ms": 59137.99286168069,
+            "generated_tokens": 64,
+            "peak_memory_gb": 8.247419357299805
+          },
+          {
+            "prefill_ms": 895.6688698381186,
+            "ttft_ms": 895.77183034271,
+            "decode_ms": 58243.28772816807,
+            "total_ms": 59139.05955851078,
+            "generated_tokens": 64,
+            "peak_memory_gb": 8.247419357299805
+          }
+        ]
+      },
+      {
+        "scenario": "batch",
+        "prompt_tokens": 128,
+        "generated_tokens": 256,
+        "prefill_ms": 0,
+        "prefill_tok_per_sec": 0,
+        "decode_ms": 36104.01004552841,
+        "decode_tok_per_sec": 7.090625104446157,
+        "ttft_ms": 0,
+        "total_ms": 36104.01004552841,
+        "peak_memory_gb": 8.241492748260498,
+        "trials": 5,
+        "trial_details": [
+          {
+            "total_ms": 36093.060905113816,
+            "total_tokens": 256,
+            "peak_memory_gb": 8.241492748260498
+          },
+          {
+            "total_ms": 36092.65141841024,
+            "total_tokens": 256,
+            "peak_memory_gb": 8.241492748260498
+          },
+          {
+            "total_ms": 36093.24069973081,
+            "total_tokens": 256,
+            "peak_memory_gb": 8.241492748260498
+          },
+          {
+            "total_ms": 36105.2400264889,
+            "total_tokens": 256,
+            "peak_memory_gb": 8.241492748260498
+          },
+          {
+            "total_ms": 36135.85717789829,
+            "total_tokens": 256,
+            "peak_memory_gb": 8.241492748260498
+          }
+        ]
+      }
+    ]
+  }
+}
