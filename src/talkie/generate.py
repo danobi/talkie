@@ -24,7 +24,6 @@ from talkie.sampling import (
     scalar_top_p_tensor,
 )
 from talkie.tokenizer import IT_VOCAB_SIZE, build_tokenizer
-from talkie.quantization import quantize_int4
 
 
 @dataclass
@@ -94,6 +93,7 @@ class Talkie:
         )
 
         if quantize == "int4":
+            from talkie.quantization import quantize_int4
             quantize_int4(self.model)
 
         # Stop tokens.
