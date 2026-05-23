@@ -17,8 +17,9 @@ Usage:
     # Diff two saved runs without re-running:
     uv run python bench/benchmark.py diff bench/baselines/main.json bench/baselines/latest.json
 
-    # Profile model loading (Chrome trace for Perfetto):
-    uv run python bench/benchmark.py profile-load load_trace.json
+    # Profile a target (Chrome trace for Perfetto):
+    uv run python bench/benchmark.py profile load load_trace.json
+    uv run python bench/benchmark.py profile generate generate_trace.json --scenario short
 """
 
 from __future__ import annotations
@@ -577,6 +578,32 @@ def diff_suites(
 # ---------------------------------------------------------------------------
 
 
+def _make_profiler():
+    """Create a torch profiler configured for our traces."""
+    from torch.profiler import ProfilerActivity, profile
+
+    activities = [ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(ProfilerActivity.CUDA)
+    return profile(
+        activities=activities,
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True,
+    )
+
+
+def _save_trace(prof, trace_path: str) -> None:
+    """Write a Chrome trace and print a summary table."""
+    prof.export_chrome_trace(trace_path)
+    print(f"Trace saved to {trace_path}")
+    print("Open in Perfetto: https://ui.perfetto.dev/")
+    sort_by = (
+        "self_cuda_time_total" if torch.cuda.is_available() else "self_cpu_time_total"
+    )
+    print(f"\n{prof.key_averages().table(sort_by=sort_by, row_limit=30)}")
+
+
 def profile_load(
     model_name: str,
     trace_path: str = "load_trace.json",
@@ -584,29 +611,91 @@ def profile_load(
     cache_dir: str | None = None,
 ) -> None:
     """Profile model loading and export a Chrome trace for Perfetto."""
-    from torch.profiler import ProfilerActivity, profile, record_function
-
-    activities = [ProfilerActivity.CPU]
-    if torch.cuda.is_available():
-        activities.append(ProfilerActivity.CUDA)
+    from torch.profiler import record_function
 
     print(f"Profiling model load: {model_name}...")
-    with profile(
-        activities=activities,
-        record_shapes=True,
-        with_stack=True,
-        profile_memory=True,
-    ) as prof:
+    with _make_profiler() as prof:
         with record_function("model_load"):
             Talkie(model_name, device=device, cache_dir=cache_dir)
             _sync()
 
-    prof.export_chrome_trace(trace_path)
-    print(f"Trace saved to {trace_path}")
-    print("Open in Perfetto: https://ui.perfetto.dev/")
+    _save_trace(prof, trace_path)
 
-    # Also print a summary table to the terminal.
-    print(f"\n{prof.key_averages().table(sort_by='self_cpu_time_total', row_limit=30)}")
+
+def profile_generate(
+    model_name: str,
+    trace_path: str = "generate_trace.json",
+    scenario_name: str = "short",
+    device: str | None = None,
+    cache_dir: str | None = None,
+    quantize: str | None = None,
+) -> None:
+    """Profile a generation and export a Chrome trace for Perfetto."""
+    from torch.profiler import record_function
+
+    if scenario_name not in SCENARIOS:
+        raise ValueError(
+            f"Unknown scenario {scenario_name!r}; choose from {list(SCENARIOS)}"
+        )
+    scenario = SCENARIOS[scenario_name]
+
+    print(f"Loading model: {model_name}...")
+    model = Talkie(model_name, device=device, cache_dir=cache_dir, quantize=quantize)
+    _sync()
+
+    prompt, token_ids = make_prompt(model.tokenizer, scenario["prompt_tokens"])
+    max_tokens = scenario["max_tokens"]
+    is_batch = "batch_size" in scenario
+    print(
+        f"  scenario={scenario_name} prompt_tokens={len(token_ids)} "
+        f"max_tokens={max_tokens}"
+        + (f" batch_size={scenario['batch_size']}" if is_batch else "")
+    )
+
+    # Warmup so the profiled run isn't dominated by one-shot kernel compilation.
+    print("Warmup...")
+    if is_batch:
+        warmup_configs = [
+            GenerationConfig(temperature=1.0, max_tokens=8)
+            for _ in range(scenario["batch_size"])
+        ]
+        model.batch_generate(prompt, warmup_configs)
+    else:
+        x = torch.tensor([token_ids], dtype=torch.long, device=model.device)
+        with torch.no_grad(), model._autocast:
+            model.model.forward(x)
+            for _ in range(4):
+                next_tok = model.model.sample_batch(x, t=1.0)
+                x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+    _sync()
+
+    print("Profiling generation...")
+    with _make_profiler() as prof:
+        if is_batch:
+            configs = [
+                GenerationConfig(temperature=1.0, max_tokens=max_tokens)
+                for _ in range(scenario["batch_size"])
+            ]
+            with record_function("batch_generate"):
+                model.batch_generate(prompt, configs)
+                _sync()
+        else:
+            x = torch.tensor([token_ids], dtype=torch.long, device=model.device)
+            with torch.no_grad(), model._autocast:
+                with record_function("prefill"):
+                    logits = model.model.forward(x)
+                    _sync()
+                first_tok = torch.argmax(logits, dim=-1)
+                x = torch.cat([x, first_tok.unsqueeze(1)], dim=1)
+                with record_function("decode"):
+                    for _ in range(max_tokens - 1):
+                        next_tok = model.model.sample_batch(x, t=1.0)
+                        x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+                        if int(next_tok[0]) in model._stop_ids:
+                            break
+                    _sync()
+
+    _save_trace(prof, trace_path)
 
 
 def run_benchmarks(
@@ -729,6 +818,17 @@ def _cmd_profile_load(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_profile_generate(args: argparse.Namespace) -> None:
+    profile_generate(
+        model_name=args.model,
+        trace_path=args.output,
+        scenario_name=args.scenario,
+        device=args.device,
+        cache_dir=args.cache_dir,
+        quantize=args.quantize,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark Talkie 13B inference")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -775,20 +875,52 @@ def main():
     p_diff.add_argument("current", metavar="CURRENT", help="Current JSON path")
     p_diff.set_defaults(func=_cmd_diff)
 
-    # `profile-load` — capture a Perfetto trace of model loading.
+    # `profile` — capture a Perfetto trace for one of several targets.
     p_prof = subparsers.add_parser(
-        "profile-load",
-        help="Profile model loading and save Chrome trace for Perfetto",
+        "profile",
+        help="Profile a target and save Chrome trace for Perfetto",
     )
-    _add_model_args(p_prof)
-    p_prof.add_argument(
+    prof_subparsers = p_prof.add_subparsers(dest="target", required=True)
+
+    # `profile load`
+    p_prof_load = prof_subparsers.add_parser(
+        "load", help="Profile model loading"
+    )
+    _add_model_args(p_prof_load)
+    p_prof_load.add_argument(
         "output",
         nargs="?",
         default="load_trace.json",
         metavar="PATH",
         help="Trace output path (default: load_trace.json)",
     )
-    p_prof.set_defaults(func=_cmd_profile_load)
+    p_prof_load.set_defaults(func=_cmd_profile_load)
+
+    # `profile generate`
+    p_prof_gen = prof_subparsers.add_parser(
+        "generate", help="Profile a generation (prefill + decode)"
+    )
+    _add_model_args(p_prof_gen)
+    p_prof_gen.add_argument(
+        "output",
+        nargs="?",
+        default="generate_trace.json",
+        metavar="PATH",
+        help="Trace output path (default: generate_trace.json)",
+    )
+    p_prof_gen.add_argument(
+        "--scenario",
+        default="short",
+        choices=list(SCENARIOS.keys()),
+        help="Scenario whose prompt/max-tokens to profile (default: short)",
+    )
+    p_prof_gen.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
+    p_prof_gen.set_defaults(func=_cmd_profile_generate)
 
     args = parser.parse_args()
     args.func(args)

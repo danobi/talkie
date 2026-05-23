@@ -9,3 +9,4 @@ build/
 .env
 uv.lock
 load_trace.json
+generate_trace.json
