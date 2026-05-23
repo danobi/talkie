@@ -194,16 +194,20 @@ def run_suite(
     model_name: str,
     device: str | None = None,
     cache_dir: str | None = None,
+    quantize: str | None = None,
 ) -> EvalSuite:
     print(f"Loading model: {model_name}...")
+    if quantize:
+        print(f"  quantize={quantize}")
     t0 = time.perf_counter()
-    model = Talkie(model_name, device=device, cache_dir=cache_dir)
+    model = Talkie(model_name, device=device, cache_dir=cache_dir, quantize=quantize)
     print(f"Loaded in {time.perf_counter() - t0:.1f}s on {model.device}")
 
+    dtype_label = "bfloat16" if not quantize else f"bfloat16+{quantize}"
     suite = EvalSuite(
         model_name=model_name,
         device=str(model.device),
-        dtype="bfloat16",
+        dtype=dtype_label,
     )
     for spec in PROMPTS:
         print(f"  [{spec.name}] decoding...", end="", flush=True)
@@ -396,6 +400,12 @@ def main() -> int:
         metavar=("BASELINE", "CURRENT"),
         help="Diff two saved JSON files without re-running the model.",
     )
+    parser.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
     args = parser.parse_args()
 
     if args.diff:
@@ -404,7 +414,12 @@ def main() -> int:
         n_fail = diff_suites(b, c, b_meta, c_meta)
         return 1 if n_fail else 0
 
-    suite = run_suite(args.model, device=args.device, cache_dir=args.cache_dir)
+    suite = run_suite(
+        args.model,
+        device=args.device,
+        cache_dir=args.cache_dir,
+        quantize=args.quantize,
+    )
 
     if args.save:
         path = save_suite(suite, args.save)

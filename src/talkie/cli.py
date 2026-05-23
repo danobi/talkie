@@ -40,6 +40,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Print all at once instead of streaming.",
     )
+    gen.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
 
     # -- chat --------------------------------------------------------------
     ch = sub.add_parser("chat", help="Interactive multi-turn chat (IT model).")
@@ -59,6 +65,12 @@ def main(argv: list[str] | None = None) -> None:
         help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR}).",
     )
     ch.add_argument("--system", default=None, help="System prompt.")
+    ch.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
 
     # -- download ----------------------------------------------------------
     dl = sub.add_parser("download", help="Download a model from HuggingFace.")
@@ -98,7 +110,12 @@ def _cmd_generate(args: argparse.Namespace) -> None:
     from talkie.generate import Talkie
 
     print(f"Loading {args.model}...", file=sys.stderr)
-    model = Talkie(args.model, device=args.device, cache_dir=args.cache_dir)
+    model = Talkie(
+        args.model,
+        device=args.device,
+        cache_dir=args.cache_dir,
+        quantize=args.quantize,
+    )
 
     if args.no_stream:
         result = model.generate(
@@ -126,7 +143,12 @@ def _cmd_chat(args: argparse.Namespace) -> None:
     from talkie.generate import Talkie
 
     print(f"Loading {args.model}...", file=sys.stderr)
-    model = Talkie(args.model, device=args.device, cache_dir=args.cache_dir)
+    model = Talkie(
+        args.model,
+        device=args.device,
+        cache_dir=args.cache_dir,
+        quantize=args.quantize,
+    )
     print("Model loaded. Type your message (Ctrl-D to quit).\n", file=sys.stderr)
 
     messages: list[Message] = []

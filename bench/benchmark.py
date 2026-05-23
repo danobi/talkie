@@ -612,15 +612,18 @@ def run_benchmarks(
     trials: int = 5,
     device: str | None = None,
     cache_dir: str | None = None,
+    quantize: str | None = None,
 ) -> BenchmarkSuite:
     """Run the full benchmark suite and return results."""
     if scenarios is None:
         scenarios = list(SCENARIOS.keys())
 
     print(f"Loading model: {model_name}...")
+    if quantize:
+        print(f"  quantize={quantize}")
     _reset_peak_memory()
     t0 = time.perf_counter()
-    model = Talkie(model_name, device=device, cache_dir=cache_dir)
+    model = Talkie(model_name, device=device, cache_dir=cache_dir, quantize=quantize)
     _sync()
     t1 = time.perf_counter()
     load_time_s = t1 - t0
@@ -629,10 +632,11 @@ def run_benchmarks(
         f"Model loaded in {load_time_s:.1f}s on {model.device} ({load_memory_gb:.2f} GB)"
     )
 
+    dtype_label = "bfloat16" if not quantize else f"bfloat16+{quantize}"
     suite = BenchmarkSuite(
         model_name=model_name,
         device=str(model.device),
-        dtype="bfloat16",
+        dtype=dtype_label,
         load_time_s=load_time_s,
     )
 
@@ -718,6 +722,12 @@ def main():
         metavar=("BASELINE", "CURRENT"),
         help="Diff two saved benchmark JSON files without running the suite",
     )
+    parser.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
     args = parser.parse_args()
 
     if args.diff:
@@ -742,6 +752,7 @@ def main():
         trials=args.trials,
         device=args.device,
         cache_dir=args.cache_dir,
+        quantize=args.quantize,
     )
 
     if args.save:

@@ -24,6 +24,7 @@ from talkie.sampling import (
     scalar_top_p_tensor,
 )
 from talkie.tokenizer import IT_VOCAB_SIZE, build_tokenizer
+from talkie.quantization import quantize_int4
 
 
 @dataclass
@@ -66,6 +67,7 @@ class Talkie:
         model_name: str,
         device: str | None = None,
         cache_dir: str | None = None,
+        quantize: Literal["int4"] | None = None,
     ):
         if model_name not in MODELS:
             available = ", ".join(sorted(MODELS))
@@ -90,6 +92,9 @@ class Talkie:
         self.model = load_checkpoint(
             str(ckpt_path), self.device, target_vocab_size=target_vocab
         )
+
+        if quantize == "int4":
+            quantize_int4(self.model)
 
         # Stop tokens.
         self._stop_ids: set[int] = {
