@@ -4,17 +4,21 @@ Measures prefill throughput, decode throughput, time-to-first-token,
 end-to-end latency, peak GPU memory, and batch generation performance.
 
 Usage:
-    uv run python bench/benchmark.py --model talkie-1930-13b-base
-    uv run python bench/benchmark.py --model talkie-1930-13b-base --scenarios short medium long batch
+    # Run the suite:
+    uv run python bench/benchmark.py run
+    uv run python bench/benchmark.py run --model talkie-1930-13b-base --scenarios short medium long batch
 
     # Save results as a baseline:
-    uv run python bench/benchmark.py --save bench/baselines/main.json
+    uv run python bench/benchmark.py run --save bench/baselines/main.json
 
     # Run and diff against a saved baseline:
-    uv run python bench/benchmark.py --baseline bench/baselines/main.json
+    uv run python bench/benchmark.py run --baseline bench/baselines/main.json
 
     # Diff two saved runs without re-running:
-    uv run python bench/benchmark.py --diff bench/baselines/main.json bench/baselines/latest.json
+    uv run python bench/benchmark.py diff bench/baselines/main.json bench/baselines/latest.json
+
+    # Profile model loading (Chrome trace for Perfetto):
+    uv run python bench/benchmark.py profile-load load_trace.json
 """
 
 from __future__ import annotations
@@ -670,24 +674,13 @@ def run_benchmarks(
     return suite
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Benchmark Talkie 13B inference")
+def _add_model_args(parser: argparse.ArgumentParser) -> None:
+    """Args shared by every subcommand that loads a model."""
     parser.add_argument(
         "--model",
         default="talkie-1930-13b-base",
         choices=list(MODELS.keys()),
         help="Model to benchmark (default: talkie-1930-13b-base)",
-    )
-    parser.add_argument(
-        "--scenarios",
-        nargs="+",
-        default=None,
-        choices=list(SCENARIOS.keys()),
-        help="Scenarios to run (default: all)",
-    )
-    parser.add_argument("--warmup", type=int, default=2, help="Warmup iterations")
-    parser.add_argument(
-        "--trials", type=int, default=5, help="Timing trials per benchmark"
     )
     parser.add_argument("--device", default=None, help="PyTorch device")
     parser.add_argument(
@@ -695,56 +688,9 @@ def main():
         default=str(DEFAULT_CACHE_DIR),
         help=f"HuggingFace cache directory (default: {DEFAULT_CACHE_DIR})",
     )
-    parser.add_argument(
-        "--profile-load",
-        nargs="?",
-        const="load_trace.json",
-        default=None,
-        metavar="PATH",
-        help="Profile model loading and save Chrome trace for Perfetto (default: load_trace.json)",
-    )
-    parser.add_argument(
-        "--save",
-        default=None,
-        metavar="PATH",
-        help="Save benchmark results to JSON at PATH (capture a baseline)",
-    )
-    parser.add_argument(
-        "--baseline",
-        default=None,
-        metavar="PATH",
-        help="After running, diff results against a previously-saved baseline JSON",
-    )
-    parser.add_argument(
-        "--diff",
-        nargs=2,
-        default=None,
-        metavar=("BASELINE", "CURRENT"),
-        help="Diff two saved benchmark JSON files without running the suite",
-    )
-    parser.add_argument(
-        "--quantize",
-        choices=["int4"],
-        default=None,
-        help="Apply weight-only quantization after loading the checkpoint.",
-    )
-    args = parser.parse_args()
 
-    if args.diff:
-        baseline_suite, baseline_meta = load_suite(args.diff[0])
-        current_suite, current_meta = load_suite(args.diff[1])
-        diff_suites(baseline_suite, current_suite, baseline_meta, current_meta)
-        return
 
-    if args.profile_load:
-        profile_load(
-            model_name=args.model,
-            trace_path=args.profile_load,
-            device=args.device,
-            cache_dir=args.cache_dir,
-        )
-        return
-
+def _cmd_run(args: argparse.Namespace) -> None:
     suite = run_benchmarks(
         model_name=args.model,
         scenarios=args.scenarios,
@@ -766,6 +712,86 @@ def main():
             "git_commit": _git_commit(),
         }
         diff_suites(baseline_suite, suite, baseline_meta, current_meta)
+
+
+def _cmd_diff(args: argparse.Namespace) -> None:
+    baseline_suite, baseline_meta = load_suite(args.baseline)
+    current_suite, current_meta = load_suite(args.current)
+    diff_suites(baseline_suite, current_suite, baseline_meta, current_meta)
+
+
+def _cmd_profile_load(args: argparse.Namespace) -> None:
+    profile_load(
+        model_name=args.model,
+        trace_path=args.output,
+        device=args.device,
+        cache_dir=args.cache_dir,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Benchmark Talkie 13B inference")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # `run` — execute the benchmark suite.
+    p_run = subparsers.add_parser("run", help="Run the benchmark suite")
+    _add_model_args(p_run)
+    p_run.add_argument(
+        "--scenarios",
+        nargs="+",
+        default=None,
+        choices=list(SCENARIOS.keys()),
+        help="Scenarios to run (default: all)",
+    )
+    p_run.add_argument("--warmup", type=int, default=2, help="Warmup iterations")
+    p_run.add_argument(
+        "--trials", type=int, default=5, help="Timing trials per benchmark"
+    )
+    p_run.add_argument(
+        "--quantize",
+        choices=["int4"],
+        default=None,
+        help="Apply weight-only quantization after loading the checkpoint.",
+    )
+    p_run.add_argument(
+        "--save",
+        default=None,
+        metavar="PATH",
+        help="Save benchmark results to JSON at PATH (capture a baseline)",
+    )
+    p_run.add_argument(
+        "--baseline",
+        default=None,
+        metavar="PATH",
+        help="After running, diff results against a previously-saved baseline JSON",
+    )
+    p_run.set_defaults(func=_cmd_run)
+
+    # `diff` — compare two saved JSONs.
+    p_diff = subparsers.add_parser(
+        "diff", help="Diff two saved benchmark JSON files without running the suite"
+    )
+    p_diff.add_argument("baseline", metavar="BASELINE", help="Baseline JSON path")
+    p_diff.add_argument("current", metavar="CURRENT", help="Current JSON path")
+    p_diff.set_defaults(func=_cmd_diff)
+
+    # `profile-load` — capture a Perfetto trace of model loading.
+    p_prof = subparsers.add_parser(
+        "profile-load",
+        help="Profile model loading and save Chrome trace for Perfetto",
+    )
+    _add_model_args(p_prof)
+    p_prof.add_argument(
+        "output",
+        nargs="?",
+        default="load_trace.json",
+        metavar="PATH",
+        help="Trace output path (default: load_trace.json)",
+    )
+    p_prof.set_defaults(func=_cmd_profile_load)
+
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":
