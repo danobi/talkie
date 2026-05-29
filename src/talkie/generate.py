@@ -216,11 +216,11 @@ class Talkie:
 
         tokens = self.tokenizer.encode(formatted, allowed_special="all")
         prompt_len = len(tokens)
-        tokens_tensor = (
+        prompt_tensor = (
             torch.tensor(tokens, dtype=torch.long, device=self.device)
             .unsqueeze(0)
             .expand(B, -1)
-            .clone()
+            .contiguous()
         )
 
         temps = torch.tensor(
@@ -240,34 +240,54 @@ class Talkie:
         finished = [False] * B
         finish_reasons = ["length"] * B
         gen_counts = [0] * B
+        generated = torch.zeros(B, global_max, dtype=torch.long, device=self.device)
 
+        def _record(step: int, next_tokens: torch.Tensor) -> None:
+            generated[:, step] = next_tokens
+            for i in range(B):
+                if finished[i]:
+                    continue
+                gen_counts[i] += 1
+                tok = int(next_tokens[i])
+                if tok in self._stop_ids:
+                    finished[i] = True
+                    finish_reasons[i] = "stop"
+                elif gen_counts[i] >= max_per[i]:
+                    finished[i] = True
+
+        kv_cache = self.model.new_kv_cache(
+            batch_size=B, max_seq_len=prompt_len + global_max
+        )
         with torch.no_grad(), self._autocast:
-            for _ in range(global_max):
-                next_tokens = self.model.sample_batch(
-                    tokens_tensor, t=temps, top_p=top_p_t, top_k=top_k_t
-                )
-                next_tokens = next_tokens.unsqueeze(1)
-                tokens_tensor = torch.cat([tokens_tensor, next_tokens], dim=1)
+            # Prefill.
+            next_tokens = self.model.sample_batch(
+                prompt_tensor,
+                t=temps,
+                top_p=top_p_t,
+                top_k=top_k_t,
+                start_pos=0,
+                kv_cache=kv_cache,
+            )
+            _record(0, next_tokens)
 
-                for i in range(B):
-                    if finished[i]:
-                        continue
-                    gen_counts[i] += 1
-                    tok = int(next_tokens[i, 0])
-                    if tok in self._stop_ids:
-                        finished[i] = True
-                        finish_reasons[i] = "stop"
-                    elif gen_counts[i] >= max_per[i]:
-                        finished[i] = True
-
+            pos = prompt_len
+            for step in range(1, global_max):
                 if all(finished):
                     break
+                next_tokens = self.model.sample_batch(
+                    next_tokens.view(B, 1),
+                    t=temps,
+                    top_p=top_p_t,
+                    top_k=top_k_t,
+                    start_pos=pos,
+                    kv_cache=kv_cache,
+                )
+                _record(step, next_tokens)
+                pos += 1
 
         results: list[GenerationResult] = []
         for i in range(B):
-            gen_tokens = tokens_tensor[
-                i, prompt_len : prompt_len + gen_counts[i]
-            ].tolist()
+            gen_tokens = generated[i, : gen_counts[i]].tolist()
             if gen_tokens and gen_tokens[-1] in self._stop_ids:
                 gen_tokens = gen_tokens[:-1]
             text = self.tokenizer.decode(gen_tokens)
@@ -301,9 +321,8 @@ class Talkie:
     ) -> Generator[str, None, None]:
         """Stream tokens from an already-formatted prompt string."""
         tokens = self.tokenizer.encode(formatted_prompt, allowed_special="all")
-        tokens_tensor = (
-            torch.tensor(tokens, dtype=torch.long, device=self.device).unsqueeze(0)
-        )
+        prompt_len = len(tokens)
+        prompt_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
 
         top_p_t = scalar_top_p_tensor(top_p, self.device)
         top_k_t = scalar_top_k_tensor(top_k, self.device)
@@ -311,22 +330,26 @@ class Talkie:
         is_it = self.spec.style == "it"
         buffered_text = ""
 
+        kv_cache = self.model.new_kv_cache(
+            batch_size=1, max_seq_len=prompt_len + max_tokens
+        )
         with torch.no_grad(), self._autocast:
-            for _ in range(max_tokens):
-                next_token = self.model.sample_batch(
-                    tokens_tensor, t=temperature, top_p=top_p_t, top_k=top_k_t
-                )[0]
-                next_token_tensor = torch.tensor(
-                    [[next_token]], device=self.device
-                )
-                tokens_tensor = torch.cat(
-                    [tokens_tensor, next_token_tensor], dim=1
-                )
+            # Prefill on the full prompt.
+            next_token = self.model.sample_batch(
+                prompt_tensor,
+                t=temperature,
+                top_p=top_p_t,
+                top_k=top_k_t,
+                start_pos=0,
+                kv_cache=kv_cache,
+            )
+            pos = prompt_len
 
-                if int(next_token) in self._stop_ids:
+            for step in range(max_tokens):
+                if int(next_token[0]) in self._stop_ids:
                     break
 
-                decoded = self.tokenizer.decode([int(next_token)])
+                decoded = self.tokenizer.decode([int(next_token[0])])
 
                 if is_it:
                     # Buffer output to catch chat-template leaks.
@@ -336,14 +359,25 @@ class Talkie:
                         if truncated:
                             yield truncated
                         break
-                    flush_upto = max(
-                        0, len(buffered_text) - (STOP_WINDOW - 1)
-                    )
+                    flush_upto = max(0, len(buffered_text) - (STOP_WINDOW - 1))
                     if flush_upto > 0:
                         yield buffered_text[:flush_upto]
                         buffered_text = buffered_text[flush_upto:]
                 else:
                     yield decoded
+
+                if step == max_tokens - 1:
+                    break
+
+                next_token = self.model.sample_batch(
+                    next_token.view(1, 1),
+                    t=temperature,
+                    top_p=top_p_t,
+                    top_k=top_k_t,
+                    start_pos=pos,
+                    kv_cache=kv_cache,
+                )
+                pos += 1
 
         # Flush remaining buffer for IT models.
         if is_it and buffered_text:

@@ -188,46 +188,52 @@ def bench_decode(
     Returns per-trial timing that separates prefill from decode.
     """
     device = model.device
+    prompt_len = len(token_ids)
 
     # Warmup with a short generation.
     for _ in range(warmup):
         x = torch.tensor([token_ids], dtype=torch.long, device=device)
+        kv_cache = model.model.new_kv_cache(1, prompt_len + max_tokens)
         with torch.no_grad(), model._autocast:
             _sync()
-            # Prefill.
-            model.model.forward(x)
+            logits = model.model.forward(x, start_pos=0, kv_cache=kv_cache)
             _sync()
-            # Generate a few tokens.
-            for _ in range(min(8, max_tokens)):
-                next_tok = model.model.sample_batch(x, t=1.0)
-                x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+            next_tok = torch.argmax(logits, dim=-1)
+            pos = prompt_len
+            for _ in range(min(8, max_tokens) - 1):
+                next_tok = model.model.sample_batch(
+                    next_tok.view(1, 1), t=1.0, start_pos=pos, kv_cache=kv_cache
+                )
+                pos += 1
             _sync()
 
     results = []
     for _ in range(trials):
         x = torch.tensor([token_ids], dtype=torch.long, device=device)
         _reset_peak_memory()
-
+        kv_cache = model.model.new_kv_cache(1, prompt_len + max_tokens)
         with torch.no_grad(), model._autocast:
             # -- Prefill --
             _sync()
             t_start = time.perf_counter()
-            logits = model.model.forward(x)
+            logits = model.model.forward(x, start_pos=0, kv_cache=kv_cache)
             _sync()
             t_prefill = time.perf_counter()
 
             # Sample first token deterministically (argmax of raw logits) so
             # TTFT timing isn't perturbed by per-step Gumbel noise.
-            first_tok = torch.argmax(logits, dim=-1)
-            x = torch.cat([x, first_tok.unsqueeze(1)], dim=1)
+            next_tok = torch.argmax(logits, dim=-1)
+            pos = prompt_len
             _sync()
             t_first_token = time.perf_counter()
 
             # -- Decode remaining tokens --
             generated = 1
             for _ in range(max_tokens - 1):
-                next_tok = model.model.sample_batch(x, t=1.0)
-                x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+                next_tok = model.model.sample_batch(
+                    next_tok.view(1, 1), t=1.0, start_pos=pos, kv_cache=kv_cache
+                )
+                pos += 1
                 generated += 1
                 tok_id = int(next_tok[0])
                 if tok_id in model._stop_ids:
@@ -652,6 +658,8 @@ def profile_generate(
         + (f" batch_size={scenario['batch_size']}" if is_batch else "")
     )
 
+    prompt_len = len(token_ids)
+
     # Warmup so the profiled run isn't dominated by one-shot kernel compilation.
     print("Warmup...")
     if is_batch:
@@ -662,11 +670,16 @@ def profile_generate(
         model.batch_generate(prompt, warmup_configs)
     else:
         x = torch.tensor([token_ids], dtype=torch.long, device=model.device)
+        kv_cache = model.model.new_kv_cache(1, prompt_len + max_tokens)
         with torch.no_grad(), model._autocast:
-            model.model.forward(x)
+            logits = model.model.forward(x, start_pos=0, kv_cache=kv_cache)
+            next_tok = torch.argmax(logits, dim=-1)
+            pos = prompt_len
             for _ in range(4):
-                next_tok = model.model.sample_batch(x, t=1.0)
-                x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+                next_tok = model.model.sample_batch(
+                    next_tok.view(1, 1), t=1.0, start_pos=pos, kv_cache=kv_cache
+                )
+                pos += 1
     _sync()
 
     print("Profiling generation...")
@@ -681,16 +694,19 @@ def profile_generate(
                 _sync()
         else:
             x = torch.tensor([token_ids], dtype=torch.long, device=model.device)
+            kv_cache = model.model.new_kv_cache(1, prompt_len + max_tokens)
             with torch.no_grad(), model._autocast:
                 with record_function("prefill"):
-                    logits = model.model.forward(x)
+                    logits = model.model.forward(x, start_pos=0, kv_cache=kv_cache)
                     _sync()
-                first_tok = torch.argmax(logits, dim=-1)
-                x = torch.cat([x, first_tok.unsqueeze(1)], dim=1)
+                next_tok = torch.argmax(logits, dim=-1)
+                pos = prompt_len
                 with record_function("decode"):
                     for _ in range(max_tokens - 1):
-                        next_tok = model.model.sample_batch(x, t=1.0)
-                        x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+                        next_tok = model.model.sample_batch(
+                            next_tok.view(1, 1), t=1.0, start_pos=pos, kv_cache=kv_cache
+                        )
+                        pos += 1
                         if int(next_tok[0]) in model._stop_ids:
                             break
                     _sync()

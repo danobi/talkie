@@ -157,21 +157,31 @@ def greedy_decode(model: Talkie, spec: PromptSpec) -> tuple[list[int], float]:
         formatted = spec.prompt
 
     prompt_ids = model.tokenizer.encode(formatted, allowed_special="all")
-    x = torch.tensor([prompt_ids], dtype=torch.long, device=model.device)
+    prompt_len = len(prompt_ids)
+    prompt_tensor = torch.tensor([prompt_ids], dtype=torch.long, device=model.device)
     top_k_t = scalar_top_k_tensor(1, model.device)
 
     generated: list[int] = []
+    kv_cache = model.model.new_kv_cache(1, prompt_len + spec.max_tokens)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad(), model._autocast:
-        for _ in range(spec.max_tokens):
-            next_tok = model.model.sample_batch(x, t=1.0, top_k=top_k_t)
+        next_tok = model.model.sample_batch(
+            prompt_tensor, t=1.0, top_k=top_k_t, start_pos=0, kv_cache=kv_cache
+        )
+        pos = prompt_len
+        for step in range(spec.max_tokens):
             tok_id = int(next_tok[0])
             if tok_id in model._stop_ids:
                 break
             generated.append(tok_id)
-            x = torch.cat([x, next_tok.unsqueeze(1)], dim=1)
+            if step == spec.max_tokens - 1:
+                break
+            next_tok = model.model.sample_batch(
+                next_tok.view(1, 1), t=1.0, top_k=top_k_t, start_pos=pos, kv_cache=kv_cache
+            )
+            pos += 1
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     elapsed_ms = (time.perf_counter() - t0) * 1000

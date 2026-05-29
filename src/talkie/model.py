@@ -93,7 +93,14 @@ class CausalSelfAttention(nn.Module):
         self.attn_resid = nn.Linear(n_state, n_state, bias=False)
         self.head_gain = HeadGain(config.n_head)
 
-    def forward(self, x: torch.Tensor, cos_sin: tuple) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos_sin: tuple,
+        start_pos: int = 0,
+        k_cache: torch.Tensor | None = None,
+        v_cache: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         bsz, seq_len, _ = x.size()
         q = self.attn_query(x).view(bsz, seq_len, self.n_head, self.head_dim)
         k = self.attn_key(x).view(bsz, seq_len, self.n_head, self.head_dim)
@@ -104,9 +111,26 @@ class CausalSelfAttention(nn.Module):
         q, k = F.rms_norm(q, (q.size(-1),)), F.rms_norm(k, (k.size(-1),))
         q = self.head_gain(q)
 
+        if k_cache is not None:
+            # Chunked prefill (seq_len > 1 with start_pos > 0) would need an
+            # explicit mask; current callers only hit (start_pos=0, any seq_len)
+            # or (start_pos>0, seq_len=1).
+            assert start_pos == 0 or seq_len == 1
+            end_pos = start_pos + seq_len
+            k_cache[:bsz, start_pos:end_pos] = k
+            v_cache[:bsz, start_pos:end_pos] = v
+            k = k_cache[:bsz, :end_pos]
+            v = v_cache[:bsz, :end_pos]
+            is_causal = start_pos == 0
+        else:
+            is_causal = True
+
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             y = F.scaled_dot_product_attention(
-                q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=is_causal,
             )
         y = y.transpose(1, 2).contiguous().view_as(x)
         return self.attn_resid(y)
@@ -142,9 +166,17 @@ class Block(nn.Module):
         self.embed_skip = ActGain(0.0)
 
     def forward(
-        self, e_x: torch.Tensor, x: torch.Tensor, cos_sin: tuple
+        self,
+        e_x: torch.Tensor,
+        x: torch.Tensor,
+        cos_sin: tuple,
+        start_pos: int = 0,
+        k_cache: torch.Tensor | None = None,
+        v_cache: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = x + self.attn_gain(self.attn(F.rms_norm(x, (x.shape[-1],)), cos_sin))
+        x = x + self.attn_gain(
+            self.attn(F.rms_norm(x, (x.shape[-1],)), cos_sin, start_pos=start_pos, k_cache=k_cache, v_cache=v_cache)
+        )
         x = x + self.mlp_gain(self.mlp(F.rms_norm(x, (x.shape[-1],))))
         x = x + self.embed_skip(e_x)
         return x
@@ -184,19 +216,54 @@ class TalkieModel(nn.Module):
         cos, sin = cos[None, :, None, :], sin[None, :, None, :]
         return cos, sin
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Run a forward pass and return ``[B, V]`` logits for the last position."""
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        start_pos: int = 0,
+        kv_cache: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Run a forward pass and return ``[B, V]`` logits for the last position.
+
+        When the KV cache is provided, ``start_pos`` is the absolute position
+        of ``input_ids[:, 0]`` in the full sequence; the new K/V are written
+        into the cache at that offset and attention reads back over the full
+        cached prefix. With no cache provided, ``start_pos`` should be 0 and
+        the call is equivalent to a stateless forward.
+        """
         _, seq_len = input_ids.shape
-        cos_sin = self.cos[:, :seq_len], self.sin[:, :seq_len]
+        end_pos = start_pos + seq_len
+        cos_sin = self.cos[:, start_pos:end_pos], self.sin[:, start_pos:end_pos]
 
         x = self.embed(input_ids)
         x = F.rms_norm(x, (x.shape[-1],))
         e_x = x
-        for block in self.blocks:
-            x = block(e_x, x, cos_sin)
+        for i, block in enumerate(self.blocks):
+            if kv_cache is not None:
+                k_cache = kv_cache[f"blocks.{i}.k"]
+                v_cache = kv_cache[f"blocks.{i}.v"]
+            else:
+                k_cache = v_cache = None
+            x = block(e_x, x, cos_sin, start_pos=start_pos, k_cache=k_cache, v_cache=v_cache)
         x = F.rms_norm(x, (x.shape[-1],))
 
         return F.linear(x[:, -1, :], self.lm_head_gain(self.lm_head)).float()
+
+    def new_kv_cache(self, batch_size: int, max_seq_len: int) -> dict[str, torch.Tensor]:
+        """Create a fresh per-layer KV cache for one generation."""
+        if max_seq_len > self.cos.shape[1]:
+            cos, sin = self._precompute_rotary_embeddings(
+                max_seq_len, self.config.head_dim
+            )
+            self.register_buffer("cos", cos, persistent=False)
+            self.register_buffer("sin", sin, persistent=False)
+        shape = (batch_size, max_seq_len, self.config.n_head, self.config.head_dim)
+        dtype = self.embed.weight.dtype
+        device = self.embed.weight.device
+        cache: dict[str, torch.Tensor] = {}
+        for i in range(self.config.n_layer):
+            cache[f"blocks.{i}.k"] = torch.zeros(shape, device=device, dtype=dtype)
+            cache[f"blocks.{i}.v"] = torch.zeros(shape, device=device, dtype=dtype)
+        return cache
 
     def sample_batch(
         self,
@@ -204,13 +271,15 @@ class TalkieModel(nn.Module):
         t: float | torch.Tensor = 0.7,
         top_p: torch.Tensor | None = None,
         top_k: torch.Tensor | None = None,
+        start_pos: int = 0,
+        kv_cache: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """Sample one token per sequence in the batch.
 
         *t* may be a scalar (one temperature for the whole batch) or a tensor of
         shape ``[B]`` / ``[B, 1]`` (per-sequence temperatures).
         """
-        logits = self.forward(x)
+        logits = self.forward(x, start_pos=start_pos, kv_cache=kv_cache)
         return sample_from_logits(logits, temperature=t, top_p=top_p, top_k=top_k)
 
 
